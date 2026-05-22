@@ -1,2 +1,2 @@
-# Solodkiy_Voistrik_Skripnik_praktikaRSM
+# Solodkiy_Voistrik_Skripnik_praktikaRSM2
 Задание по практике РСМ. Планировщик задач (по типу крона). Идея - консольная программа, в которой можно настроить время запуска разных процессов.
