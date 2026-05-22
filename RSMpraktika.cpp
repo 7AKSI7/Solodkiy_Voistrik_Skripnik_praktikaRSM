@@ -143,6 +143,60 @@ string typeToString(ScheduleType type) {
     }
 }
 
+string typeToFileString(ScheduleType type) {
+    switch (type) {
+    case ScheduleType::Once:
+        return "once";
+    case ScheduleType::Daily:
+        return "daily";
+    case ScheduleType::Interval:
+        return "interval";
+    default:
+        return "once";
+    }
+}
+
+string formatTime(const chrono::system_clock::time_point& point) {
+    const time_t rawTime = toTimeT(point);
+    const tm local = localTime(rawTime);
+    stringstream stream;
+    stream << put_time(&local, "%H:%M");
+    return stream.str();
+}
+
+string toLower(string text) {
+    transform(text.begin(), text.end(), text.begin(), [](unsigned char symbol) {
+        return static_cast<char>(tolower(symbol));
+    });
+    return text;
+}
+
+bool parseStatus(const string& text) {
+    const string status = toLower(trim(text));
+    return status == "on" || status == "1" || status == "active";
+}
+
+bool parseScheduleType(const string& text, ScheduleType& type) {
+    const string value = toLower(trim(text));
+
+    if (value == "once" || value == "1") {
+        type = ScheduleType::Once;
+        return true;
+    }
+
+    if (value == "daily" || value == "2") {
+        type = ScheduleType::Daily;
+        return true;
+    }
+
+    if (value == "interval" || value == "3") {
+        type = ScheduleType::Interval;
+        return true;
+    }
+
+    return false;
+}
+
 bool isInteger(const string& text) {
     if (text.empty()) {
         return false;
@@ -151,6 +205,19 @@ bool isInteger(const string& text) {
     return all_of(text.begin(), text.end(), [](unsigned char symbol) {
         return isdigit(symbol) != 0;
     });
+}
+
+string joinParts(const vector<string>& parts, size_t startIndex, char delimiter) {
+    string result;
+
+    for (size_t i = startIndex; i < parts.size(); ++i) {
+        if (i > startIndex) {
+            result += delimiter;
+        }
+        result += parts[i];
+    }
+
+    return trim(result);
 }
 
 int nextTaskId(const vector<Task>& tasks) {
@@ -164,15 +231,92 @@ int nextTaskId(const vector<Task>& tasks) {
 void saveTasks(const vector<Task>& tasks) {
     ofstream file(TASKS_FILE);
 
+    file << "# Format: type|status|schedule|name|command\n";
+    file << "# type: once, daily, interval\n";
+    file << "# examples:\n";
+    file << "# once|on|2026-05-22 18:30|Notepad|notepad.exe\n";
+    file << "# daily|on|09:00|Document|\"C:\\Users\\AKSI\\Desktop\\file.docx\"\n";
+    file << "# interval|on|10|Check|notepad.exe\n";
+
     for (const Task& task : tasks) {
-        file << task.id << '\t'
-             << static_cast<int>(task.type) << '\t'
-             << task.active << '\t'
-             << task.intervalMinutes << '\t'
-             << toTimeT(task.nextRun) << '\t'
-             << task.name << '\t'
+        string schedule;
+
+        if (task.type == ScheduleType::Once) {
+            schedule = formatDateTime(task.nextRun);
+        } else if (task.type == ScheduleType::Daily) {
+            schedule = formatTime(task.nextRun);
+        } else {
+            schedule = to_string(task.intervalMinutes);
+        }
+
+        file << typeToFileString(task.type) << '|'
+             << (task.active ? "on" : "off") << '|'
+             << schedule << '|'
+             << task.name << '|'
              << task.command << '\n';
     }
+}
+
+bool parsePipeTask(const string& line, Task& task) {
+    vector<string> parts = split(line, '|');
+    if (parts.size() < 4) {
+        return false;
+    }
+
+    size_t scheduleIndex = 1;
+    size_t nameIndex = 2;
+    size_t commandIndex = 3;
+    task.active = true;
+
+    if (parts.size() >= 5) {
+        task.active = parseStatus(parts[1]);
+        scheduleIndex = 2;
+        nameIndex = 3;
+        commandIndex = 4;
+    }
+
+    if (!parseScheduleType(parts[0], task.type)) {
+        return false;
+    }
+
+    const string schedule = trim(parts[scheduleIndex]);
+    task.name = trim(parts[nameIndex]);
+    task.command = joinParts(parts, commandIndex, '|');
+
+    if (task.name.empty() || task.command.empty()) {
+        return false;
+    }
+
+    bool ok = false;
+    if (task.type == ScheduleType::Once) {
+        task.nextRun = parseDateTime(schedule, ok);
+    } else if (task.type == ScheduleType::Daily) {
+        task.nextRun = todayAt(schedule, ok);
+    } else {
+        ok = isInteger(schedule) && stoi(schedule) > 0;
+        if (ok) {
+            task.intervalMinutes = stoi(schedule);
+            task.nextRun = chrono::system_clock::now() + chrono::minutes(task.intervalMinutes);
+        }
+    }
+
+    return ok;
+}
+
+bool parseLegacyTask(const string& line, Task& task) {
+    vector<string> parts = split(line, '\t');
+    if (parts.size() < 7) {
+        return false;
+    }
+
+    task.id = stoi(parts[0]);
+    task.type = static_cast<ScheduleType>(stoi(parts[1]));
+    task.active = stoi(parts[2]) != 0;
+    task.intervalMinutes = stoi(parts[3]);
+    task.nextRun = chrono::system_clock::from_time_t(static_cast<time_t>(stoll(parts[4])));
+    task.name = parts[5];
+    task.command = parts[6];
+    return true;
 }
 
 vector<Task> loadTasks() {
@@ -181,21 +325,30 @@ vector<Task> loadTasks() {
     string line;
 
     while (getline(file, line)) {
-        vector<string> parts = split(line, '\t');
-        if (parts.size() < 7) {
+        line = trim(line);
+        if (line.empty() || line[0] == '#') {
             continue;
         }
 
         Task task;
-        task.id = stoi(parts[0]);
-        task.type = static_cast<ScheduleType>(stoi(parts[1]));
-        task.active = stoi(parts[2]) != 0;
-        task.intervalMinutes = stoi(parts[3]);
-        task.nextRun = chrono::system_clock::from_time_t(static_cast<time_t>(stoll(parts[4])));
-        task.name = parts[5];
-        task.command = parts[6];
+        bool loaded = false;
 
-        tasks.push_back(task);
+        try {
+            if (line.find('|') != string::npos) {
+                loaded = parsePipeTask(line, task);
+            } else {
+                loaded = parseLegacyTask(line, task);
+            }
+        } catch (...) {
+            loaded = false;
+        }
+
+        if (loaded) {
+            if (task.id == 0) {
+                task.id = nextTaskId(tasks);
+            }
+            tasks.push_back(task);
+        }
     }
 
     return tasks;
@@ -207,18 +360,18 @@ void listTasks(const vector<Task>& tasks) {
         return;
     }
 
-    cout << left << setw(5) << "ID"
-         << setw(12) << "Тип"
-         << setw(8) << "Статус"
-         << setw(18) << "Следующий запуск"
+    cout << left << setw(6) << "ID" << "  "
+         << setw(16) << "Тип" << "  "
+         << setw(12) << "Статус" << "  "
+         << setw(24) << "Следующий запуск" << "  "
          << "Название / команда\n";
-    cout << string(85, '-') << '\n';
+    cout << string(108, '-') << '\n';
 
     for (const Task& task : tasks) {
-        cout << left << setw(5) << task.id
-             << setw(12) << typeToString(task.type)
-             << setw(8) << (task.active ? "on" : "off")
-             << setw(18) << formatDateTime(task.nextRun)
+        cout << left << setw(6) << task.id << "  "
+             << setw(16) << typeToString(task.type) << "  "
+             << setw(12) << (task.active ? "on" : "off") << "  "
+             << setw(24) << formatDateTime(task.nextRun) << "  "
              << task.name << " -> " << task.command << '\n';
     }
 }

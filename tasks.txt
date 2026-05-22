@@ -1,0 +1,6 @@
+# Format: type|status|schedule|name|command
+# type: once, daily, interval
+# examples:
+# once|on|2026-05-22 18:30|Notepad|notepad.exe
+# daily|on|09:00|Document|"C:\Users\AKSI\Desktop\file.docx"
+# interval|on|10|Check|notepad.exe
